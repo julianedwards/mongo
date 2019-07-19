@@ -318,6 +318,7 @@ pipelineeEnv.Library(
         'document_source_sort_by_count.cpp',
         'document_source_tee_consumer.cpp',
         'document_source_unwind.cpp',
+        'document_source_ftdc_unwind.cpp',
         'semantic_analysis.cpp',
         'pipeline.cpp',
         'sequential_document_cache.cpp',
