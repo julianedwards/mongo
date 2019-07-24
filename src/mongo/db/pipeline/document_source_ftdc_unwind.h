@@ -43,22 +43,17 @@ public:
 
     Value serialize(boost::optional<ExplainOptions::Verbosity> explain = boost::none) const final;
 
-    // TODO: figure out how this will work if the whole doc is being ftdc unwound
-    /**
-     * Returns the unwound path.
-     */
-    GetModPathsReturn getModifiedPaths() const final;
-
     StageConstraints constraints(Pipeline::SplitState pipeState) const final {
         StageConstraints constraints(StreamType::kStreaming,
-                                     PositionRequirement::kNone,
+                                     PositionRequirement::kFirst,
                                      HostTypeRequirement::kNone,
                                      DiskUseRequirement::kNoDiskUse,
-                                     FacetRequirement::kAllowed,
-                                     TransactionRequirement::kAllowed,
-                                     LookupRequirement::kAllowed);
+                                     FacetRequirement::kNotAllowed,
+                                     TransactionRequirement::kAllowed, // TODO: can this stay as is?
+                                     LookupRequirement::kAllowed); // TODO: what about this one?
+        constraints.requiresInputDocSource = false;
+        constraints.isIndependentOfAnyCollection = true;
 
-        constraints.canSwapWithMatch = true;
         return constraints;
     }
 
@@ -76,28 +71,24 @@ public:
 
     static boost::intrusive_ptr<DocumentSourceFTDCUnwind> create(
         const boost::intrusive_ptr<ExpressionContext>& expCtx,
-        const boost::optional<std::string>& path,
-        bool excludeMetadata,
-        bool excludeMissing);
-
-    std::string getFTDCUnwindPath() const {
-        return _ftdcUnwindPath->fullPath();
-    }
+        const Date_t start,
+        const Date_t end,
+        bool excludeMetadata);
 
 private:
     DocumentSourceFTDCUnwind(const boost::intrusive_ptr<ExpressionContext>& pExpCtx,
-                             const boost::optional<FieldPath>& fieldPath,
-                             bool excludeMetadata,
-                             bool excludeMissing);
+                             const Date_t start,
+                             const Date_t end,
+                             bool excludeMetadata);
 
-    // Configuration state.
-    const boost::optional<FieldPath> _ftdcUnwindPath;
     // If set, the $ftdcUnwind stage will exclude metadata documents (ftdc type
     // 0 documents).
     const bool _excludeMetadata;
-    // If set, will exclude documents that do not include ftdc data from this
-    // stage's output.
-    const bool _excludeMissing;
+
+    // Documents to unwind.
+    std::vector<Document> _compressed;
+    // Index into _compressed to return next.
+    size_t _cIndex = 0;
 
     // Iteration state.
     class FTDCUnwinder;

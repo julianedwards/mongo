@@ -31,13 +31,18 @@
 
 #include "mongo/db/pipeline/document_source_ftdc_unwind.h"
 
+#include <boost/filesystem/operations.hpp>
+
+#include "mongo/bson/util/bson_extract.h"
+#include "mongo/db/ftdc/decompressor.h"
+#include "mongo/db/ftdc/file_reader.h"
+#include "mongo/db/ftdc/ftdc_server.h"
+#include "mongo/db/ftdc/util.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/pipeline/document.h"
 #include "mongo/db/pipeline/expression.h"
 #include "mongo/db/pipeline/lite_parsed_document_source.h"
 #include "mongo/db/pipeline/value.h"
-#include "mongo/db/ftdc/decompressor.h"
-#include "mongo/db/ftdc/util.h"
 
 namespace mongo {
 
@@ -48,9 +53,7 @@ using std::vector;
 /** Helper class to unwind (decompress) ftdc data from a single document. */
 class DocumentSourceFTDCUnwind::FTDCUnwinder {
 public:
-    FTDCUnwinder(const boost::optional<FieldPath>& unwindFTDCPath,
-                 bool excludeMetadata,
-                 bool excludeMissing);
+    FTDCUnwinder(const Date_t start, const Date_t end, bool excludeMetadata);
 
     /** Reset the unwinder to unwind a new document. */
     void resetDocument(const Document& document);
@@ -70,20 +73,14 @@ private:
     // may return boost::none even if this is true.
     bool _haveNext = false;
 
-    // Path to the ftdc data to unwind.
-    const boost::optional<FieldPath> _ftdcUnwindPath;
+    // Start and end for date range.
+    const Date_t _start;
+    const Date_t _end;
 
     // If set, will leave metadata data (ftdc type 0) unmodified.
     const bool _excludeMetadata;
 
-    // If set, will leave out documents without ftdc data from the final
-    // result.
-    const bool _excludeMissing;
-
-    MutableDocument _output;
-
-    // Document indexes of the field path components.
-    vector<Position> _ftdcUnwindPathFieldIndexes;
+    Document _output;
 
     // Resulting BSON objects returned from decompression.
     vector<BSONObj> _decompressed;
@@ -96,23 +93,23 @@ private:
 };
 
 DocumentSourceFTDCUnwind::FTDCUnwinder::FTDCUnwinder(
-        const boost::optional<FieldPath>& ftdcUnwindPath,
-        bool excludeMetadata,
-        bool excludeMissing)
-    : _ftdcUnwindPath(ftdcUnwindPath),
+        const Date_t start,
+        const Date_t end,
+        bool excludeMetadata)
+    : _start(start),
+      _end(end),
       _excludeMetadata(excludeMetadata),
-      _excludeMissing(excludeMissing),
       _decompressor(new FTDCDecompressor()) {}
 
 void DocumentSourceFTDCUnwind::FTDCUnwinder::resetDocument(const Document& document) {
     // Reset document specific attributes.
-    _output.reset(document);
-    _ftdcUnwindPathFieldIndexes.clear();
+    _output = document;
     _decompressed.clear();
     _index = 0;
     _haveNext = true;
 }
 
+// TODO: refactor this to be less ugly.
 DocumentSource::GetNextResult DocumentSourceFTDCUnwind::FTDCUnwinder::getNext() {
     if (!_haveNext) {
         return GetNextResult::makeEOF();
@@ -120,75 +117,139 @@ DocumentSource::GetNextResult DocumentSourceFTDCUnwind::FTDCUnwinder::getNext() 
 
     if (_decompressed.empty()) {
         // Get BSONObj.
-        BSONObj doc;
-        if (_ftdcUnwindPath) {
-            auto val = _output.peek().getNestedField(*_ftdcUnwindPath, &_ftdcUnwindPathFieldIndexes);
-            if (val.getType() == Object) {
-                // TODO: figure out how to turn Value object into BSONObj.
-                doc = val.getDocument().toBson();
-            }
-        } else {
-            doc = _output.peek().toBson();
-        }
+        auto doc = _output.toBson();
 
-        // check type
+        // Check type.
         auto swType = FTDCBSONUtil::getBSONDocumentType(doc);
-        if (swType.isOK()) {
-            // Ignore metadata if specified.
-            if (swType.getValue() == FTDCBSONUtil::FTDCType::kMetadata && _excludeMetadata) {
-                _haveNext = false;
-                return GetNextResult::makeEOF();
-            }
+        uassert(51249,
+                str::stream() << "invalid ftdc type in diagnostic data",
+                swType.isOK());
 
-            auto swDecompressed = FTDCBSONUtil::getMetricsFromMetricDoc(doc, _decompressor);
-            if (!swDecompressed.isOK()) {
-                // TODO: figure out what to on error here
-                return GetNextResult::makeEOF();
-            }
-            _decompressed = swDecompressed.getValue();
-        } else {
+        // Ignore metadata if specified.
+        if (swType.getValue() == FTDCBSONUtil::FTDCType::kMetadata && _excludeMetadata) {
             _haveNext = false;
-            // Ignore non-ftdc data if specified.
-            if (_excludeMissing) {
-                return GetNextResult::makeEOF();
-            }
-            return _output.freeze();
+            return GetNextResult::makeEOF();
         }
+
+        auto swDecompressed = FTDCBSONUtil::getMetricsFromMetricDoc(doc, _decompressor);
+        uassert(51251,
+                str::stream() << "problem decompressing ftdc from diagnostic data",
+                swDecompressed.isOK());
+        _decompressed = swDecompressed.getValue();
     }
 
     auto length = _decompressed.size();
     invariant(_index == 0 || _index < length);
-
     if (length == 0) {
         _haveNext = false;
         return GetNextResult::makeEOF();
     }
 
-    // Set field to be the next element in the decompressed ftdc vector.
-    Document output;
-    _haveNext = _index + 1 < length;
-    if (_ftdcUnwindPath) {
-        _output.setNestedField(_ftdcUnwindPathFieldIndexes, Value(_decompressed[_index]));
-        output = _haveNext ? _output.peek() : _output.freeze();
-    } else {
-        output = Document::fromBsonWithMetaData(_decompressed[_index]);
+    while (true) {
+        if (_index >= length) {
+            _haveNext = false;
+            return GetNextResult::makeEOF();
+        }
+
+        BSONElement element;
+        // TODO: expose kFTDCCollectStartField var in src/db/ftdc/util.cpp,
+        // this is equal to "start".
+        auto status = bsonExtractTypedField(
+                _decompressed[_index], "start", BSONType::Date, &element);
+        uassert(51252,
+            str::stream() << "invalid ftdc id in diagnostic data",
+            status.isOK());
+        if (element.date() < _start) {
+            _index++;
+            continue;
+        } else if (element.date() >= _end) {
+            _haveNext = false;
+            return GetNextResult::makeEOF();
+        }
+        break;
     }
+
+    // Set field to be the next element in the decompressed ftdc vector.
+    auto output = Document::fromBsonWithMetaData(_decompressed[_index]);
     _index++;
+    _haveNext = _index < length;
     return output;
 }
 
 DocumentSourceFTDCUnwind::DocumentSourceFTDCUnwind(
         const intrusive_ptr<ExpressionContext>& pExpCtx,
-        const boost::optional<FieldPath>& fieldPath,
-        bool excludeMetadata,
-        bool excludeMissing)
+        const Date_t start,
+        const Date_t end,
+        bool excludeMetadata)
     : DocumentSource(pExpCtx),
-      _ftdcUnwindPath(fieldPath),
       _excludeMetadata(excludeMetadata),
-      _excludeMissing(excludeMissing),
-      _ftdcUnwinder(new FTDCUnwinder(fieldPath, excludeMetadata, excludeMissing)) {}
+      _ftdcUnwinder(new FTDCUnwinder(start, end, excludeMetadata)) {
+          std::vector<boost::filesystem::path> paths(2);
+          auto lower = Date_t::min();
+          auto upper = Date_t::max();
+          // get ftdc dir
+          auto path = getFTDCDirectoryPathParameter();
+          if (!path.empty()) {
+              // list ftdc files
+              boost::filesystem::directory_iterator itEnd;
+              for (boost::filesystem::directory_iterator it(path); it != itEnd; it++) {
+                  boost::filesystem::path f(*it);
+                  if (!boost::filesystem::is_regular_file(f)) {
+                      continue;
+                  }
 
-// TODO: where is this unwind variable coming from?
+                  // parse files (for timestamps)
+                  // find files within start and end range
+                  auto fn = f.leaf().string();
+                  // 34 is the length of all diagnostic data files
+                  if (fn.size() != 34) {
+                      continue;
+                  }
+
+                  // 8 is the length of "metrics."
+                  auto dateString = fn.substr(8, 20);
+                  dateString[13] = ':';
+                  dateString[16] = ':';
+                  auto swDate = dateFromISOString(StringData(dateString));
+                  if (!swDate.isOK()) {
+                      continue;
+                  }
+                  auto fileDate = swDate.getValue();
+                  if (fileDate <= start && fileDate > lower) {
+                      lower = fileDate;
+                      paths[0] = f;
+                  } else if (fileDate >= end && fileDate < upper) {
+                      upper = fileDate;
+                      paths[1] = f;
+                  }
+              }
+          }
+
+          // TODO: maybe include iterim file here ?
+
+          for (auto path : paths) {
+              FTDCFileReader reader(false);
+              auto swOpen = reader.open(path);
+              uassert(51250,
+                      str::stream() << "failed to open diagnostic data file: "
+                                    << swOpen.reason(),
+                      swOpen.isOK());
+
+              // load those files into bson objs
+              while (reader.hasNext().getValue()) {
+                  auto out = reader.next();
+                  auto obj = std::get<1>(out);
+                  auto chunkDate = std::get<2>(out);
+
+                  // find bsonobjs within range
+                  if (chunkDate >= start && chunkDate < end) {
+                      // add those objs to vector<Document> _compressed
+                      _compressed.push_back(Document::fromBsonWithMetaData(obj));
+                  }
+              }
+          }
+}
+
 REGISTER_DOCUMENT_SOURCE(ftdcUnwind,
                          LiteParsedDocumentSourceDefault::parse,
                          DocumentSourceFTDCUnwind::createFromBson);
@@ -199,15 +260,12 @@ const char* DocumentSourceFTDCUnwind::getSourceName() const {
 
 intrusive_ptr<DocumentSourceFTDCUnwind> DocumentSourceFTDCUnwind::create(
     const intrusive_ptr<ExpressionContext>& expCtx,
-    const boost::optional<string>& ftdcUnwindPath,
-    bool excludeMetadata,
-    bool excludeMissing) {
+    const Date_t start,
+    const Date_t end,
+    bool excludeMetadata) {
     intrusive_ptr<DocumentSourceFTDCUnwind> source(
-        new DocumentSourceFTDCUnwind(
-            expCtx,
-            ftdcUnwindPath ? FieldPath(*ftdcUnwindPath) : boost::optional<FieldPath>(),
-            excludeMetadata,
-            excludeMissing));
+            new DocumentSourceFTDCUnwind(expCtx, start, end, excludeMetadata));
+
     return source;
 }
 
@@ -215,77 +273,53 @@ DocumentSource::GetNextResult DocumentSourceFTDCUnwind::getNext() {
     pExpCtx->checkForInterrupt();
 
     auto nextOut = _ftdcUnwinder->getNext();
-    while (nextOut.isEOF()) {
-        // TODO: change this comment
-        // No more elements in array currently being unwound. This will loop if the input
-        // document is missing the unwind field or has an empty array.
-        auto nextInput = pSource->getNext();
-        if (!nextInput.isAdvanced()) {
-            return nextInput;
-        }
-
+    if (nextOut.isEOF() && _cIndex < _compressed.size()) {
         // Try to extract an output document from the new input document.
-        _ftdcUnwinder->resetDocument(nextInput.releaseDocument());
+        _ftdcUnwinder->resetDocument(_compressed[_cIndex]);
         nextOut = _ftdcUnwinder->getNext();
+        _cIndex++;
     }
 
     return nextOut;
 }
 
-DocumentSource::GetModPathsReturn DocumentSourceFTDCUnwind::getModifiedPaths() const {
-    std::set<std::string> modifiedFields{};
-    if (_ftdcUnwindPath) {
-        modifiedFields.insert(_ftdcUnwindPath->fullPath());
-    }
-    return {GetModPathsReturn::Type::kFiniteSet, std::move(modifiedFields), {}};
-}
-
-// TODO: figure out what this is for?
 Value DocumentSourceFTDCUnwind::serialize(boost::optional<ExplainOptions::Verbosity> explain) const {
     return Value(DOC(getSourceName() << DOC(
-                "path" << (_ftdcUnwindPath ? Value(_ftdcUnwindPath->fullPathWithPrefix()) : Value())
-                       << "excludeMetadata"
-                       << (_excludeMetadata ? Value(true) : Value())
-                       << "excludeMissing"
-                       << (_excludeMissing ? Value(true) : Value()))));
+                    "excludeMetadata" << (_excludeMetadata ? Value(true) : Value()))));
 }
 
 DepsTracker::State DocumentSourceFTDCUnwind::getDependencies(DepsTracker* deps) const {
-    if (_ftdcUnwindPath) {
-        deps->fields.insert(_ftdcUnwindPath->fullPath());
-    }
     return DepsTracker::State::SEE_NEXT;
 }
 
 // TODO: figure out and (probably) change error codes.
 intrusive_ptr<DocumentSource> DocumentSourceFTDCUnwind::createFromBson(
     BSONElement elem, const intrusive_ptr<ExpressionContext>& pExpCtx) {
-    boost::optional<string> prefixedPathString;
+    Date_t start;
+    Date_t end;
     bool excludeMetadata = false;
-    bool excludeMissing = false;
 
     if (elem.type() == Object) {
         for (auto&& subElem : elem.Obj()) {
-            if (subElem.fieldNameStringData() == "path") {
+            if (subElem.fieldNameStringData() == "start") {
                 uassert(51242,
-                        str::stream() << "expected a string as the path for $ftdcUnwind stage, got "
+                        str::stream() << "expected a date as start time for $ftdcUnwind stage, got "
                                       << typeName(subElem.type()),
-                        subElem.type() == String);
-                prefixedPathString = subElem.str();
-            } else if (subElem.fieldNameStringData() == "excludeMetadata") {
+                        subElem.type() == Date);
+                start = subElem.date();
+            } else if (subElem.fieldNameStringData() == "end") {
                 uassert(51243,
+                        str::stream() << "expected a date as end time for $ftdcUnwind stage, got "
+                                      << typeName(subElem.type()),
+                        subElem.type() == Date);
+                end = subElem.date();
+            } else if (subElem.fieldNameStringData() == "excludeMetadata") {
+                uassert(51244,
                         str::stream() << "expected a boolean for the excludeMetadata"
                                          "option to $ftdcUnwind stage, got "
                                       << typeName(subElem.type()),
                         subElem.type() == Bool);
                 excludeMetadata = subElem.Bool();
-            } else if (subElem.fieldNameStringData() == "excludeMissing") {
-                uassert(51244,
-                        str::stream() << "expected a boolean for the excludeMissing"
-                                         " option to $unwind stage, got "
-                                      << typeName(subElem.type()),
-                        subElem.type() == Bool);
-                excludeMissing = subElem.Bool();
             } else {
                 uasserted(51245,
                           str::stream() << "unrecognized option to $ftdcUnwind stage: "
@@ -300,15 +334,11 @@ intrusive_ptr<DocumentSource> DocumentSourceFTDCUnwind::createFromBson(
                 << typeName(elem.type()));
     }
 
-    boost::optional<string> pathString;
-    if (prefixedPathString) {
-        uassert(51247,
-                str::stream() << "path option to $ftdcUnwind stage should be prefixed with a '$': "
-                              << prefixedPathString,
-                (*prefixedPathString)[0] == '$');
-        pathString = Expression::removeFieldPrefix(*prefixedPathString);
-    }
+    auto diff = end - start;
+    uassert(51247,
+            str::stream() << "must specify 0 > end - start <= 60 min",
+            diff > Milliseconds(0) && diff <= Minutes(60));
 
-    return DocumentSourceFTDCUnwind::create(pExpCtx, pathString, excludeMetadata, excludeMissing);
+    return DocumentSourceFTDCUnwind::create(pExpCtx, start, end, excludeMetadata);
 }
 } // namespace mongo

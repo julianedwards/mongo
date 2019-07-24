@@ -85,21 +85,24 @@ StatusWith<bool> FTDCFileReader::hasNext() {
             if (type == FTDCBSONUtil::FTDCType::kMetadata) {
                 _state = State::kMetadataDoc;
 
-                auto swMetadata = FTDCBSONUtil::getBSONDocumentFromMetadataDoc(_parent);
-                if (!swMetadata.isOK()) {
-                    return swMetadata.getStatus();
-                }
+                if (_decompress) {
+                    auto swMetadata = FTDCBSONUtil::getBSONDocumentFromMetadataDoc(_parent);
+                    if (!swMetadata.isOK()) {
+                        return swMetadata.getStatus();
+                    }
 
-                _metadata = swMetadata.getValue();
+                    _metadata = swMetadata.getValue();
+                }
             } else if (type == FTDCBSONUtil::FTDCType::kMetricChunk) {
                 _state = State::kMetricChunk;
 
-                auto swDocs = FTDCBSONUtil::getMetricsFromMetricDoc(_parent, &_decompressor);
-                if (!swDocs.isOK()) {
-                    return swDocs.getStatus();
+                if (_decompress) {
+                    auto swDocs = FTDCBSONUtil::getMetricsFromMetricDoc(_parent, &_decompressor);
+                    if (!swDocs.isOK()) {
+                        return swDocs.getStatus();
+                    }
+                    _docs = swDocs.getValue();
                 }
-
-                _docs = swDocs.getValue();
 
                 // There is always at least the reference document
                 _pos = 0;
@@ -117,12 +120,11 @@ StatusWith<bool> FTDCFileReader::hasNext() {
         // If we have a metric chunk, return the next document in the chunk until the chunk is
         // exhausted
         if (_state == State::kMetricChunk) {
-            if (_pos + 1 == _docs.size()) {
+            _pos++;
+            if (!_decompress || _pos == _docs.size()) {
                 _state = State::kNeedsDoc;
                 continue;
             }
-
-            _pos++;
 
             return {true};
         }
@@ -133,13 +135,23 @@ std::tuple<FTDCBSONUtil::FTDCType, const BSONObj&, Date_t> FTDCFileReader::next(
     dassert(_state == State::kMetricChunk || _state == State::kMetadataDoc);
 
     if (_state == State::kMetadataDoc) {
-        return std::tuple<FTDCBSONUtil::FTDCType, const BSONObj&, Date_t>(
-            FTDCBSONUtil::FTDCType::kMetadata, _metadata, _dateId);
+        if (_decompress) {
+            return std::tuple<FTDCBSONUtil::FTDCType, const BSONObj&, Date_t>(
+                FTDCBSONUtil::FTDCType::kMetadata, _metadata, _dateId);
+        } else {
+            return std::tuple<FTDCBSONUtil::FTDCType, const BSONObj&, Date_t>(
+                FTDCBSONUtil::FTDCType::kMetadata, _parent, _dateId);
+        }
     }
 
     if (_state == State::kMetricChunk) {
-        return std::tuple<FTDCBSONUtil::FTDCType, const BSONObj&, Date_t>(
-            FTDCBSONUtil::FTDCType::kMetricChunk, _docs[_pos], _dateId);
+        if (_decompress) {
+            return std::tuple<FTDCBSONUtil::FTDCType, const BSONObj&, Date_t>(
+                FTDCBSONUtil::FTDCType::kMetricChunk, _docs[_pos], _dateId);
+        } else {
+            return std::tuple<FTDCBSONUtil::FTDCType, const BSONObj&, Date_t>(
+                FTDCBSONUtil::FTDCType::kMetricChunk, _parent, _dateId);
+        }
     }
 
     MONGO_UNREACHABLE;

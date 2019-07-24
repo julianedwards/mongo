@@ -53,7 +53,9 @@ class FTDCFileReader {
     FTDCFileReader& operator=(const FTDCFileReader&) = delete;
 
 public:
-    FTDCFileReader() : _state(State::kNeedsDoc) {}
+    FTDCFileReader(bool decompress = true)
+        : _decompress(decompress),
+          _state(State::kNeedsDoc) {}
     ~FTDCFileReader();
 
     /**
@@ -83,6 +85,7 @@ private:
 
 private:
     FTDCDecompressor _decompressor;
+    bool _decompress;
 
     /**
      * Internal state of file reading state machine.
