@@ -299,7 +299,7 @@ class TestRunner(Subcommand):  # pylint: disable=too-many-instance-attributes
     # pylint: disable=too-many-instance-attributes,too-many-statements,too-many-locals
     def _setup_jasper(self):
         """Start up the jasper process manager."""
-        root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
         proto_file = os.path.join(root_dir, "buildscripts", "resmokelib", "core", "jasper.proto")
         try:
             well_known_protos_include = pkg_resources.resource_filename("grpc_tools", "_proto")
@@ -335,7 +335,7 @@ class TestRunner(Subcommand):  # pylint: disable=too-many-instance-attributes
         if ret != 0:
             raise RuntimeError("Failed to generated gRPC files from the jasper.proto file")
 
-        sys.path.append(os.path.dirname(proto_out))
+        sys.path.extend([os.path.dirname(proto_out), proto_out])
 
         from jasper import jasper_pb2
         from jasper import jasper_pb2_grpc

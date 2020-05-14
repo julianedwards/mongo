@@ -1,4 +1,3 @@
-"""Unit tests for the buildscripts.resmokelib.logging.buildlogger module."""
 
 import json
 import unittest
