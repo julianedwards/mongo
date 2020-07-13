@@ -346,7 +346,7 @@ class TestRunner(Subcommand):  # pylint: disable=too-many-instance-attributes
         curator_path = "build/curator"
         if sys.platform == "win32":
             curator_path += ".exe"
-        git_hash = "d846f0c875716e9377044ab2a50542724369662a"
+        git_hash = "b900876905354bd6e3a60594cfaf47935fef0877"
         curator_exists = os.path.isfile(curator_path)
         curator_same_version = False
         if curator_exists:
@@ -379,7 +379,10 @@ class TestRunner(Subcommand):  # pylint: disable=too-many-instance-attributes
         jasper_port = config.BASE_PORT - 1
         jasper_conn_str = "localhost:%d" % jasper_port
         jasper_process.Process.connection_str = jasper_conn_str
-        jasper_command = [curator_path, "jasper", "grpc", "--port", str(jasper_port)]
+        jasper_command = [
+            curator_path, "jasper", "service", "run", "rpc", "--port",
+            str(jasper_port)
+        ]
         self._jasper_server = process.Process(self._resmoke_logger, jasper_command)
         self._jasper_server.start()
 
