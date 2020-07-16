@@ -297,8 +297,8 @@ class TestRunner(Subcommand):  # pylint: disable=too-many-instance-attributes
             self._archive.exit()
 
     # pylint: disable=too-many-instance-attributes,too-many-statements,too-many-locals
-    def _setup_jasper(self):
-        """Start up the jasper process manager."""
+    def _get_jasper_reqs(self):
+        """Ensure that we have all requirements for running jasper."""
         root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
         proto_file = os.path.join(root_dir, "buildscripts", "resmokelib", "core", "jasper.proto")
         try:
@@ -337,16 +337,10 @@ class TestRunner(Subcommand):  # pylint: disable=too-many-instance-attributes
 
         sys.path.extend([os.path.dirname(proto_out), proto_out])
 
-        from jasper import jasper_pb2
-        from jasper import jasper_pb2_grpc
-
-        jasper_process.Process.jasper_pb2 = jasper_pb2
-        jasper_process.Process.jasper_pb2_grpc = jasper_pb2_grpc
-
         curator_path = "build/curator"
         if sys.platform == "win32":
             curator_path += ".exe"
-        git_hash = "b900876905354bd6e3a60594cfaf47935fef0877"
+        git_hash = "c2db2af5b462df17d856339efb814284985b2cc0"
         curator_exists = os.path.isfile(curator_path)
         curator_same_version = False
         if curator_exists:
@@ -375,6 +369,18 @@ class TestRunner(Subcommand):  # pylint: disable=too-many-instance-attributes
             response = requests.get(url, stream=True)
             with tarfile.open(mode="r|gz", fileobj=response.raw) as tf:
                 tf.extractall(path="./build/")
+
+        return curator_path
+
+    def _setup_jasper(self):
+        """Start up the jasper process manager."""
+        curator_path = self._get_jasper_reqs()
+
+        from jasper import jasper_pb2
+        from jasper import jasper_pb2_grpc
+
+        jasper_process.Process.jasper_pb2 = jasper_pb2
+        jasper_process.Process.jasper_pb2_grpc = jasper_pb2_grpc
 
         jasper_port = config.BASE_PORT - 1
         jasper_conn_str = "localhost:%d" % jasper_port
