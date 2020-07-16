@@ -340,7 +340,7 @@ class TestRunner(Subcommand):  # pylint: disable=too-many-instance-attributes
         curator_path = "build/curator"
         if sys.platform == "win32":
             curator_path += ".exe"
-        git_hash = "c2db2af5b462df17d856339efb814284985b2cc0"
+        git_hash = "d11f83290729dc42138af106fe01bc0714c24a8b"
         curator_exists = os.path.isfile(curator_path)
         curator_same_version = False
         if curator_exists:

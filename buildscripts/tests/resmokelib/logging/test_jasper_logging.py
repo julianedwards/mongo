@@ -1,3 +1,4 @@
+import os
 import subprocess
 import time
 import unittest
@@ -28,8 +29,12 @@ class TestJasperLogging(unittest.TestCase):
         level = pb.LogLevel(threshold=30, default=30)
         buildlogger_info = pb.BuildloggerV3Info(
                 project="resmoke-unittest",
-                task_id="test-jasper-proto",
-                rpc_address="cedar.mongodb.com:8080"
+                task_id="test-jasper-proto-"+os.getenv('TASK_ID'),
+                execution = os.getenv('EXECUTION'),
+                base_address="cedar.mongodb.com",
+                rpc_port="7070",
+                username=os.getenv('BUILDLOGGER_USER'),
+                api_key=os.getenv('BUILDLOGGER_API_KEY')
         )
         buildlogger_options = pb.BuildloggerV3Options(buildloggerv3=buildlogger_info, level=level)
         logger_config = pb.LoggerConfig()
