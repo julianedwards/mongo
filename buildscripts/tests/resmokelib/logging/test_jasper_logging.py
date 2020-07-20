@@ -28,9 +28,13 @@ class TestJasperLogging(unittest.TestCase):
 
         level = pb.LogLevel(threshold=30, default=30)
         buildlogger_info = pb.BuildloggerV3Info(
-                project="resmoke-unittest",
-                task_id="test-jasper-proto-"+os.getenv('TASK_ID'),
-                execution = os.getenv('EXECUTION'),
+                project=config.EVERGREEN_PROJECT_NAME,
+                version=config.EVERGREEN_VERSION_ID,
+                variant=config.EVERGREEN_VARIANT_NAME,
+                task_name=config.EVERGREEN_TASK_NAME,
+                task_id=config.EVERGREEN_TASK_ID,
+                test_name="test-jasper-proto",
+                execution=config.EVERGREEN_EXECUTION,
                 base_address="cedar.mongodb.com",
                 rpc_port="7070",
                 username=os.getenv('BUILDLOGGER_USER'),
