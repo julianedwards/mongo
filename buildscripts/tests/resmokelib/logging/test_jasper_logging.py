@@ -2,15 +2,21 @@ import os
 import subprocess
 import time
 import unittest
-import grpc.experimental
 
 from buildscripts.resmokelib import config
 from buildscripts.resmokelib import run
+
+import grpc
+from google.protobuf import empty_pb2
+
 
 # pylint: disable=missing-docstring,protected-access
 
 class TestJasperLogging(unittest.TestCase):
     def test_logging_endpoint(self):
+        if not config.EVERGREEN_TASK_ID:
+            return
+
         runner = run.TestRunner("")
         curator_path = runner._get_jasper_reqs()
 
@@ -45,5 +51,8 @@ class TestJasperLogging(unittest.TestCase):
         logger_config.buildloggerv3.CopyFrom(buildlogger_options)
         create_options = pb.CreateOptions(args=['ls'], working_directory='.', output=pb.OutputOptions(loggers=[logger_config]))
         res = stub.Create(request=create_options)
+        self.assertEqual(0, res.exit_code)
+        res = stub.Close(empty_pb2.Empty())
+        self.assertTrue(res.success)
 
         jasper_service.terminate()
