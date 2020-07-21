@@ -43,8 +43,8 @@ class TestJasperLogging(unittest.TestCase):
                 execution=config.EVERGREEN_EXECUTION,
                 base_address="cedar.mongodb.com",
                 rpc_port="7070",
-                username=os.getenv('BUILDLOGGER_USER'),
-                api_key=os.getenv('BUILDLOGGER_API_KEY')
+                username=os.getenv('CEDAR_USER'),
+                api_key=os.getenv('CEDAR_API_KEY')
         )
         buildlogger_options = pb.BuildloggerV3Options(buildloggerv3=buildlogger_info, level=level)
         logger_config = pb.LoggerConfig()
