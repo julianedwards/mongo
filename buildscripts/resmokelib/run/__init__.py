@@ -299,8 +299,11 @@ class TestRunner(Subcommand):  # pylint: disable=too-many-instance-attributes
     # pylint: disable=too-many-instance-attributes,too-many-statements,too-many-locals
     def _get_jasper_reqs(self):
         """Ensure that we have all requirements for running jasper."""
-        root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        root_dir = os.getcwd()
         proto_file = os.path.join(root_dir, "buildscripts", "resmokelib", "core", "jasper.proto")
+        if not os.path.exists(proto_file):
+            raise RuntimeError("Resmoke must be run from the root of the mongo repo.")
+
         try:
             well_known_protos_include = pkg_resources.resource_filename("grpc_tools", "_proto")
         except ImportError:

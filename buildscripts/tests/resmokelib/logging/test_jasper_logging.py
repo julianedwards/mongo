@@ -15,6 +15,7 @@ from google.protobuf import empty_pb2
 class TestJasperLogging(unittest.TestCase):
     def test_logging_endpoint(self):
         if not config.EVERGREEN_TASK_ID:
+            print("Testing jasper logging endpoint should only be tested in Evergreen, skipping...")
             return
 
         runner = run.TestRunner("")
@@ -43,13 +44,13 @@ class TestJasperLogging(unittest.TestCase):
                 execution=config.EVERGREEN_EXECUTION,
                 base_address="cedar.mongodb.com",
                 rpc_port="7070",
-                username=os.getenv('CEDAR_USER'),
-                api_key=os.getenv('CEDAR_API_KEY')
+                username=os.getenv("CEDAR_USER"),
+                api_key=os.getenv("CEDAR_API_KEY")
         )
         buildlogger_options = pb.BuildloggerV3Options(buildloggerv3=buildlogger_info, level=level)
         logger_config = pb.LoggerConfig()
         logger_config.buildloggerv3.CopyFrom(buildlogger_options)
-        create_options = pb.CreateOptions(args=['ls'], working_directory='.', output=pb.OutputOptions(loggers=[logger_config]))
+        create_options = pb.CreateOptions(args=["ls"], working_directory='.', output=pb.OutputOptions(loggers=[logger_config]))
         res = stub.Create(request=create_options)
         self.assertEqual(0, res.exit_code)
         res = stub.Close(empty_pb2.Empty())
